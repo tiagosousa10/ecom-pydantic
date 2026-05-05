@@ -24,7 +24,11 @@ def get_cart(user_email: str):
     """
     Retrieve all items in the user's cart.
     """
-    items = list(cart_collection.find({"user_email": user_email}))
+    items = []
+    for doc in cart_collection.find({"user_email": user_email}):
+        doc["id"] = str(doc["_id"])
+        doc.pop("_id", None)
+        items.append(doc)
     return items
 
 #not utilized

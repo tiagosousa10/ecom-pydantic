@@ -8,18 +8,60 @@ from ..models import Product
 from ..database import products_collection
 
 import base64
+from io import BytesIO
 from bson import ObjectId
+
+from PIL import Image
 
 
 router = APIRouter(prefix="/products", tags=["Products"])
+
+# MongoDB BSON docs are capped at ~16MB; base64 expands payload ~4/3.
+_MAX_BASE64_IMAGE_CHARS = 11_000_000
+
+
+def _prepare_image_for_mongodb(image_bytes: bytes) -> tuple[str, str]:
+    """Resize and JPEG-compress so the product document stays under MongoDB's size limit."""
+    try:
+        im = Image.open(BytesIO(image_bytes))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    if im.mode in ("RGBA", "LA"):
+        bg = Image.new("RGB", im.size, (255, 255, 255))
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    elif im.mode != "RGB":
+        im = im.convert("RGB")
+
+    max_dim = 2048
+    qualities = (88, 80, 72, 64, 56, 48, 40)
+
+    for _ in range(12):
+        scaled = im.copy()
+        scaled.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        for quality in qualities:
+            buf = BytesIO()
+            scaled.save(buf, format="JPEG", quality=quality, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            if len(b64) <= _MAX_BASE64_IMAGE_CHARS:
+                return b64, "image/jpeg"
+        max_dim = max(400, int(max_dim * 0.72))
+
+    raise HTTPException(
+        status_code=413,
+        detail="Image remains too large for storage after compression; try a smaller file.",
+    )
+
+
 @router.post("")
 async def add_product(
     name: str = Form(...),
     description: str = Form(...),
     price: int = Form(...),
     category: str = Form(...),
-    size: List[str] = Form(...),
-    color: List[str] = Form(...),
+    size: list[str] = Form(...),
+    color: list[str] = Form(...),
     image: UploadFile = File(...),
 
 ):
@@ -28,10 +70,7 @@ async def add_product(
     """
 
     image_data = await image.read()
-    base64_image = base64.b64encode(image_data).decode('utf-8')
-
-    #determine content type
-    content_type = image.content_type or "image/jpeg"
+    base64_image, content_type = _prepare_image_for_mongodb(image_data)
 
     #create product document and insert into database
     product = {
@@ -228,8 +267,7 @@ async def update_product(
 
         if image is not None:
             image_data = await image.read()
-            base64_image = base64.b64encode(image_data).decode('utf-8')
-            content_type = image.content_type or "image/jpeg"
+            base64_image, content_type = _prepare_image_for_mongodb(image_data)
             update_data["image_data"] = base64_image
             update_data["image_content_type"] = content_type
 

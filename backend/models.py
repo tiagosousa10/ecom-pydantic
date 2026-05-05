@@ -21,7 +21,7 @@ class Order(BaseModel):
     product_name: str
     quantity: int
 
-class CarItem(BaseModel):
+class CartItem(BaseModel):
     """ shopping cart item model"""
     user_email: str
     product_name: str
